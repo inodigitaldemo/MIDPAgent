@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential, AzureCliCredential
+from md_to_docx import convert_md_to_docx
 
 load_dotenv()
 
@@ -288,28 +289,22 @@ def save_markdown_locally(markdown_text: str, filename: str) -> Path:
     return path
 
 
-def upload_to_sharepoint(token: str, site_id: str, list_id: str,
-                         item_id: str, filename: str, content: str) -> None:
-    """Attach a file to a specific SharePoint list item."""
+def upload_to_sharepoint(token: str, site_id: str, filename: str,
+                         content: bytes) -> None:
+    """Upload a file to the default document library on the SharePoint site."""
     safe_name = re.sub(r'[<>:"|?*]', "_", filename)
-    url = (f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}"
-           f"/items/{item_id}/attachments")
-    resp = requests.post(
+    url = f"{GRAPH_BASE}/sites/{site_id}/drive/root:/{safe_name}:/content"
+    resp = requests.put(
         url,
         headers={
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
+            "Content-Type": "application/octet-stream",
         },
-        json={
-            "name": safe_name,
-            "contentBytes": __import__("base64").b64encode(
-                content.encode("utf-8")
-            ).decode("ascii"),
-        },
-        timeout=30,
+        data=content,
+        timeout=60,
     )
     resp.raise_for_status()
-    print(f"  Attached to list item {item_id}: {safe_name}")
+    print(f"  Uploaded to SharePoint: {resp.json().get('webUrl', safe_name)}")
 
 
 # ---------------------------------------------------------------------------
@@ -413,17 +408,24 @@ def main() -> None:
             filename = re.sub(r"\s+", "_", title) + ".md"
             print(f"  No filename detected; using '{filename}'")
 
-        # Save locally
+        # Save .md locally
         local_path = save_markdown_locally(markdown_text, filename)
         print(f"  Saved locally: {local_path}")
 
-        # Attach to the SharePoint list item
-        item_id = str(fields.get("id", ""))
+        # Convert .md → .docx
         try:
-            upload_to_sharepoint(token, site_id, list_id, item_id,
-                                 filename, markdown_text)
+            _, docx_path = convert_md_to_docx(local_path, output_dir=local_path.parent)
+            print(f"  Converted to DOCX: {docx_path}")
         except Exception as exc:
-            print(f"  WARNING: SharePoint attachment failed – {exc}")
+            print(f"  WARNING: DOCX conversion failed – {exc}")
+            continue
+
+        # Upload .docx to SharePoint
+        try:
+            upload_to_sharepoint(token, site_id, docx_path.name,
+                                 docx_path.read_bytes())
+        except Exception as exc:
+            print(f"  WARNING: SharePoint upload failed – {exc}")
 
         print()
 
