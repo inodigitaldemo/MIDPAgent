@@ -1,0 +1,132 @@
+/* DocTemplates/CSS/style.css
+   Base stylesheet applied when converting Markdown → HTML → DOCX.
+   ---------------------------------------------------------------- */
+
+/* ── Page & Body ─────────────────────────────────────────────── */
+body {
+    font-family: "Calibri", "Segoe UI", Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.6;
+    color: #1a1a1a;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 2em 3em;
+    background-color: #ffffff;
+}
+
+/* ── Headings ─────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+    font-family: "Calibri", "Segoe UI", Arial, sans-serif;
+    font-weight: 700;
+    color: #1f3864;
+    margin-top: 1.4em;
+    margin-bottom: 0.4em;
+    line-height: 1.2;
+}
+
+h1 { font-size: 22pt; border-bottom: 2px solid #1f3864; padding-bottom: 0.2em; }
+h2 { font-size: 16pt; border-bottom: 1px solid #c8d3e6; padding-bottom: 0.15em; }
+h3 { font-size: 13pt; }
+h4 { font-size: 11pt; text-transform: uppercase; letter-spacing: 0.05em; }
+h5 { font-size: 10pt; font-style: italic; }
+h6 { font-size: 9pt;  font-style: italic; color: #555; }
+
+/* ── Paragraphs ───────────────────────────────────────────────── */
+p {
+    margin-top: 0.4em;
+    margin-bottom: 0.8em;
+}
+
+/* ── Links ────────────────────────────────────────────────────── */
+a {
+    color: #1f5dbd;
+    text-decoration: underline;
+}
+a:visited {
+    color: #8e44ad;
+}
+
+/* ── Lists ────────────────────────────────────────────────────── */
+ul, ol {
+    margin: 0.6em 0 0.8em 1.8em;
+    padding: 0;
+}
+li {
+    margin-bottom: 0.3em;
+}
+
+/* ── Code ─────────────────────────────────────────────────────── */
+code, kbd, samp {
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 0.92em;
+    background-color: #f3f4f6;
+    padding: 0.15em 0.35em;
+    border-radius: 3px;
+    color: #c0392b;
+}
+
+pre {
+    background-color: #f3f4f6;
+    border: 1px solid #dde1e8;
+    border-radius: 4px;
+    padding: 1em 1.2em;
+    overflow-x: auto;
+    font-size: 0.88em;
+    line-height: 1.5;
+}
+pre code {
+    background: none;
+    padding: 0;
+    color: #1a1a1a;
+}
+
+/* ── Blockquotes ──────────────────────────────────────────────── */
+blockquote {
+    margin: 1em 0;
+    padding: 0.6em 1.2em;
+    border-left: 4px solid #1f3864;
+    background-color: #f0f4fb;
+    color: #333;
+    font-style: italic;
+}
+blockquote p {
+    margin: 0;
+}
+
+/* ── Tables ───────────────────────────────────────────────────── */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-size: 10.5pt;
+}
+th {
+    background-color: #1f3864;
+    color: #ffffff;
+    font-weight: 700;
+    text-align: left;
+    padding: 0.5em 0.8em;
+}
+td {
+    padding: 0.45em 0.8em;
+    border-bottom: 1px solid #dde1e8;
+    vertical-align: top;
+}
+tr:nth-child(even) td {
+    background-color: #f7f8fc;
+}
+
+/* ── Horizontal Rules ────────────────────────────────────────── */
+hr {
+    border: none;
+    border-top: 1px solid #c8d3e6;
+    margin: 2em 0;
+}
+
+/* ── Images ───────────────────────────────────────────────────── */
+img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 1em auto;
+}
