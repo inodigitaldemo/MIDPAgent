@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html$if(lang)$ lang="$lang$"$endif$>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+$for(author-meta)$
+  <meta name="author" content="$author-meta$" />
+$endfor$
+$if(date-meta)$
+  <meta name="dcterms.date" content="$date-meta$" />
+$endif$
+$if(keywords)$
+  <meta name="keywords" content="$for(keywords)$$keywords$$sep$, $endfor$" />
+$endif$
+  <title>$if(title-prefix)$$title-prefix$ – $endif$$pagetitle$</title>
+$for(css)$
+  <link rel="stylesheet" href="$css$" />
+$endfor$
+$for(header-includes)$
+  $header-includes$
+$endfor$
+</head>
+<body>
+  <div class="document-shell">
+    <header class="document-header" role="banner">
+      <div class="document-header__title">$if(title)$$title$$else$$pagetitle$$endif$</div>
+      <div class="document-header__subtitle">Controlled Document</div>
+    </header>
+
+    <main class="document-content" role="main">
+$body$
+    </main>
+
+    <footer class="document-footer" role="contentinfo">
+      <div class="document-footer__left">Quality Management System</div>
+      <div class="document-footer__right">Generated from Markdown</div>
+    </footer>
+  </div>
+</body>
+</html>

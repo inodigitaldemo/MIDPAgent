@@ -2,6 +2,59 @@
    Base stylesheet applied when converting Markdown → HTML → DOCX.
    ---------------------------------------------------------------- */
 
+:root {
+    --document-header-bg: #000000;
+    --document-footer-bg: #000000;
+    --document-header-text: #ffb81c;
+    --document-footer-text: #ffb81c;
+}
+
+.document-shell {
+    min-height: 100vh;
+    background-color: #ffffff;
+}
+
+.document-header,
+.document-footer {
+    padding: 1rem 3rem;
+}
+
+.document-header {
+    background-color: var(--document-header-bg);
+    color: var(--document-header-text);
+    border-bottom: 4px solid var(--document-header-text);
+}
+
+.document-header__title {
+    font-size: 20pt;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.document-header__subtitle {
+    margin-top: 0.25rem;
+    font-size: 10pt;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.document-content {
+    padding-bottom: 1.5rem;
+}
+
+.document-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 2rem;
+    background-color: var(--document-footer-bg);
+    color: var(--document-footer-text);
+    border-top: 4px solid var(--document-footer-text);
+    font-size: 9.5pt;
+    font-weight: 600;
+}
+
 /* ── Page & Body ─────────────────────────────────────────────── */
 body {
     font-family: "Calibri", "Segoe UI", Arial, sans-serif;
@@ -10,8 +63,14 @@ body {
     color: #1a1a1a;
     max-width: 860px;
     margin: 0 auto;
-    padding: 2em 3em;
+    padding: 0;
     background-color: #ffffff;
+}
+
+main {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 2em 3em;
 }
 
 /* ── Headings ─────────────────────────────────────────────────── */
