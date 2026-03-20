@@ -2,20 +2,23 @@
 MIDPAgent – Master Information Delivery Plan Agent
 
 Connects to a SharePoint list via Microsoft Graph API, retrieves items
-created today, prints them to the terminal, and forwards each item's Title
-to the Azure AI Foundry agent named by the AGENT_NAME environment variable.
+created today, sends each item's full field data as JSON to the Azure AI
+Foundry agent, parses the generated Markdown response, saves .md files
+locally, and uploads them to the SharePoint site's default document library.
 """
 
+import json
 import os
+import re
 import sys
-from datetime import date, timezone, datetime
+import time
+from datetime import date
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
-from azure.identity import ClientSecretCredential, DefaultAzureCredential
-from azure.ai.projects import AIProjectClient
-from openai import OpenAI
+from azure.identity import ClientSecretCredential, AzureCliCredential
 
 load_dotenv()
 
@@ -104,7 +107,7 @@ def resolve_list_id(token: str, site_id: str) -> str:
             return sp_list["id"]
     raise ValueError(
         f"List '{SHAREPOINT_LIST_NAME}' not found on site. "
-        f"Available lists: {[l['displayName'] for l in resp.json().get('value', [])]}"
+        f"Available lists: {[lst['displayName'] for lst in resp.json().get('value', [])]}"
     )
 
 
@@ -131,59 +134,182 @@ def get_items_created_today(token: str, site_id: str, list_id: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Azure AI helpers
+# Azure AI Foundry Agents helpers (REST API)
 # ---------------------------------------------------------------------------
 
-def build_openai_client() -> OpenAI:
-    """Build an authenticated OpenAI client via AIProjectClient.
+def get_foundry_token() -> str:
+    """Acquire a token for the Azure AI Foundry Agents API via Azure CLI."""
+    credential = AzureCliCredential()
+    return credential.get_token("https://ai.azure.com/.default").token
 
-    The AIProjectClient.get_openai_client() method returns a standard OpenAI
-    client pre-configured with the project endpoint and Entra ID credentials.
-    Conversational agents (Assistants) are accessed through this client via
-    the openai_client.beta.assistants / beta.threads API.
+
+def foundry_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def get_agent_definition(token: str) -> dict:
+    """Fetch the Foundry agent and return its latest version definition."""
+    url = f"{AZURE_AI_PROJECT_ENDPOINT}/agents/{AGENT_NAME}?api-version=v1"
+    resp = requests.get(url, headers=foundry_headers(token), timeout=30)
+    resp.raise_for_status()
+    return resp.json()["versions"]["latest"]["definition"]
+
+
+def ensure_assistant(token: str) -> str:
+    """Ensure an OpenAI-compatible assistant exists for the Foundry agent.
+
+    Foundry 'prompt' agents aren't automatically exposed as OpenAI assistants.
+    This creates one (idempotent by name) and returns its assistant ID.
     """
-    if not AZURE_AI_PROJECT_ENDPOINT:
-        raise EnvironmentError("AZURE_AI_PROJECT_ENDPOINT environment variable is required.")
+    headers = foundry_headers(token)
 
-    project_client = AIProjectClient(
-        endpoint=AZURE_AI_PROJECT_ENDPOINT,
-        credential=DefaultAzureCredential(),
+    # Check if an assistant already exists with this name
+    resp = requests.get(
+        f"{AZURE_AI_PROJECT_ENDPOINT}/assistants?api-version=v1",
+        headers=headers, timeout=30,
     )
-    return project_client.get_openai_client()
+    resp.raise_for_status()
+    for asst in resp.json().get("data", []):
+        if asst.get("name") == AGENT_NAME:
+            return asst["id"]
 
-
-def find_assistant(openai_client: OpenAI, agent_name: str):
-    """Return the first assistant whose name matches *agent_name*, or None."""
-    for assistant in openai_client.beta.assistants.list():
-        if assistant.name == agent_name:
-            return assistant
-    return None
-
-
-def send_title_to_agent(openai_client: OpenAI, assistant, title: str) -> str:
-    """Create a thread, post *title* as a user message, run the assistant, and
-    return the assistant's last text reply."""
-    thread = openai_client.beta.threads.create()
-    openai_client.beta.threads.messages.create(
-        thread_id=thread.id,
-        role="user",
-        content=title,
+    # Create from agent definition
+    agent_def = get_agent_definition(token)
+    resp = requests.post(
+        f"{AZURE_AI_PROJECT_ENDPOINT}/assistants?api-version=v1",
+        headers=headers,
+        json={
+            "model": agent_def["model"],
+            "name": AGENT_NAME,
+            "instructions": agent_def.get("instructions", ""),
+        },
+        timeout=30,
     )
-    run = openai_client.beta.threads.runs.create_and_poll(
-        thread_id=thread.id,
-        assistant_id=assistant.id,
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+def send_item_to_agent(token: str, assistant_id: str, fields: dict) -> str:
+    """Create a thread, post the item fields, run the assistant, poll until
+    complete, and return the assistant's text reply."""
+    headers = foundry_headers(token)
+    base = AZURE_AI_PROJECT_ENDPOINT
+    payload = json.dumps(fields, indent=2, default=str)
+
+    # Create thread
+    resp = requests.post(f"{base}/threads?api-version=v1",
+                         headers=headers, json={}, timeout=30)
+    resp.raise_for_status()
+    thread_id = resp.json()["id"]
+
+    # Post user message
+    requests.post(
+        f"{base}/threads/{thread_id}/messages?api-version=v1",
+        headers=headers,
+        json={"role": "user", "content": payload},
+        timeout=30,
+    ).raise_for_status()
+
+    # Start run
+    resp = requests.post(
+        f"{base}/threads/{thread_id}/runs?api-version=v1",
+        headers=headers,
+        json={"assistant_id": assistant_id},
+        timeout=30,
     )
+    resp.raise_for_status()
+    run_id = resp.json()["id"]
 
-    if run.status != "completed":
-        return f"[Run ended with status '{run.status}']"
+    # Poll until terminal state
+    while True:
+        time.sleep(2)
+        resp = requests.get(
+            f"{base}/threads/{thread_id}/runs/{run_id}?api-version=v1",
+            headers=headers, timeout=30,
+        )
+        resp.raise_for_status()
+        status = resp.json()["status"]
+        if status in ("completed", "failed", "cancelled", "expired"):
+            break
 
-    messages = openai_client.beta.threads.messages.list(thread_id=thread.id)
-    for message in messages:
-        if message.role == "assistant":
-            for content_block in message.content:
-                if hasattr(content_block, "text"):
-                    return content_block.text.value
+    if status != "completed":
+        return f"[Run ended with status '{status}']"
+
+    # Retrieve messages
+    resp = requests.get(
+        f"{base}/threads/{thread_id}/messages?api-version=v1",
+        headers=headers, timeout=30,
+    )
+    resp.raise_for_status()
+    for msg in resp.json().get("data", []):
+        if msg["role"] == "assistant":
+            for block in msg.get("content", []):
+                if block.get("type") == "text":
+                    return block["text"]["value"]
+
     return "[No response from agent]"
+
+
+# ---------------------------------------------------------------------------
+# Markdown output helpers
+# ---------------------------------------------------------------------------
+
+def parse_agent_response(response: str) -> tuple[str | None, str | None]:
+    """Extract Markdown content and filename from the agent's response.
+
+    Returns (markdown_text, filename).  Either may be None if the agent
+    returned an unexpected format.
+    """
+    # Extract fenced code block content (```markdown ... ``` or ``` ... ```)
+    code_block = re.search(r"```(?:markdown|md)?\s*\n(.*?)```", response, re.DOTALL)
+    markdown_text = code_block.group(1).strip() if code_block else None
+
+    # Extract filename – agent is instructed to use [DocID]_[Title].md
+    filename_match = re.search(r"`([^`]+\.md)`", response)
+    if not filename_match:
+        filename_match = re.search(r"(\S+\.md)", response)
+    filename = filename_match.group(1).strip() if filename_match else None
+
+    return markdown_text, filename
+
+
+def save_markdown_locally(markdown_text: str, filename: str) -> Path:
+    """Write *markdown_text* to output/<filename> and return the path."""
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    # Sanitise filename – keep only safe characters
+    safe_name = re.sub(r'[<>:"/\\|?*]', "_", filename)
+    path = output_dir / safe_name
+    path.write_text(markdown_text, encoding="utf-8")
+    return path
+
+
+def upload_to_sharepoint(token: str, site_id: str, list_id: str,
+                         item_id: str, filename: str, content: str) -> None:
+    """Attach a file to a specific SharePoint list item."""
+    safe_name = re.sub(r'[<>:"|?*]', "_", filename)
+    url = (f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}"
+           f"/items/{item_id}/attachments")
+    resp = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "name": safe_name,
+            "contentBytes": __import__("base64").b64encode(
+                content.encode("utf-8")
+            ).decode("ascii"),
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    print(f"  Attached to list item {item_id}: {safe_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -246,43 +372,60 @@ def main() -> None:
         )
     print()
 
-    # ── 4. Connect to Azure AI Projects ────────────────────────────────────
-    print("Connecting to Azure AI Projects…")
+    # ── 4. Connect to Azure AI Foundry agent ─────────────────────────────
+    print("Acquiring Azure AI Foundry token…")
     try:
-        openai_client = build_openai_client()
+        foundry_token = get_foundry_token()
     except Exception as exc:
-        print(f"ERROR: Could not create AI client – {exc}", file=sys.stderr)
+        print(f"ERROR: Could not acquire Foundry token – {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Looking for agent '{AGENT_NAME}'…")
+    print(f"Ensuring assistant for agent '{AGENT_NAME}'…")
     try:
-        assistant = find_assistant(openai_client, AGENT_NAME)
+        assistant_id = ensure_assistant(foundry_token)
     except Exception as exc:
-        print(f"ERROR: Could not list assistants – {exc}", file=sys.stderr)
+        print(f"ERROR: Could not create/find assistant – {exc}", file=sys.stderr)
         sys.exit(1)
 
-    if assistant is None:
-        print(
-            f"ERROR: Agent '{AGENT_NAME}' was not found in the project. "
-            "Please create it in Azure AI Foundry first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    print(f"Assistant ready (id={assistant_id}). Sending items…\n")
 
-    print(f"Agent found (id={assistant.id}). Sending titles…\n")
-
-    # ── 5. Send each title to the agent ────────────────────────────────────
+    # ── 5. Send each item to the agent and handle Markdown output ─────────
     for item in items:
-        title = item.get("fields", {}).get("Title", "").strip()
+        fields = item.get("fields", {})
+        title = fields.get("Title", "").strip()
         if not title:
             continue
 
-        print(f"→ Sending: '{title}'")
+        print(f"→ Sending item: '{title}'")
         try:
-            response = send_title_to_agent(openai_client, assistant, title)
-            print(f"  Agent response: {response}\n")
+            response = send_item_to_agent(foundry_token, assistant_id, fields)
         except Exception as exc:
             print(f"  ERROR processing '{title}': {exc}\n", file=sys.stderr)
+            continue
+
+        markdown_text, filename = parse_agent_response(response)
+
+        if not markdown_text:
+            print(f"  Agent did not return Markdown. Raw response:\n{response}\n")
+            continue
+
+        if not filename:
+            filename = re.sub(r"\s+", "_", title) + ".md"
+            print(f"  No filename detected; using '{filename}'")
+
+        # Save locally
+        local_path = save_markdown_locally(markdown_text, filename)
+        print(f"  Saved locally: {local_path}")
+
+        # Attach to the SharePoint list item
+        item_id = str(fields.get("id", ""))
+        try:
+            upload_to_sharepoint(token, site_id, list_id, item_id,
+                                 filename, markdown_text)
+        except Exception as exc:
+            print(f"  WARNING: SharePoint attachment failed – {exc}")
+
+        print()
 
 
 if __name__ == "__main__":
