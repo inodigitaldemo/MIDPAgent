@@ -1,105 +1,133 @@
 """
 MIDPAgent – Master Information Delivery Plan Agent
 
-Connects to a SharePoint list, retrieves items created today, prints them
-to the terminal, and forwards each item's Title to the Azure AI Foundry agent
-named "inodidigtal-documentmanager".
+Connects to a SharePoint list via Microsoft Graph API, retrieves items
+created today, prints them to the terminal, and forwards each item's Title
+to the Azure AI Foundry agent named by the AGENT_NAME environment variable.
 """
 
+import os
 import sys
-import json
-from datetime import date
-from pathlib import Path
+from datetime import date, timezone, datetime
+from urllib.parse import urlparse
 
-from office365.sharepoint.client_context import ClientContext
-from office365.runtime.auth.client_credential import ClientCredential
+import requests
+from dotenv import load_dotenv
+from azure.identity import ClientSecretCredential, DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
-from azure.identity import DefaultAzureCredential
 from openai import OpenAI
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-CONFIG_PATH = Path(__file__).with_name("config.json")
+SHAREPOINT_SITE_URL = os.environ.get("SHAREPOINT_SITE_URL")
+SHAREPOINT_LIST_NAME = os.environ.get("SHAREPOINT_LIST_NAME")
+
+SHAREPOINT_CLIENT_ID = os.environ.get("SHAREPOINT_CLIENT_ID")
+SHAREPOINT_CLIENT_SECRET = os.environ.get("SHAREPOINT_CLIENT_SECRET")
+AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID")
+
+AZURE_AI_PROJECT_ENDPOINT = os.environ.get("AZURE_AI_PROJECT_ENDPOINT")
+
+AGENT_NAME = os.environ.get("AGENT_NAME")
+
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
-def load_config(config_path: Path) -> dict:
-    """Load and validate JSON configuration from *config_path*."""
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Configuration file not found: {config_path}. "
-            "Create it from config.example.json."
+def validate_environment_configuration() -> None:
+    """Validate required environment variables for this script."""
+    required = {
+        "SHAREPOINT_SITE_URL": SHAREPOINT_SITE_URL,
+        "SHAREPOINT_LIST_NAME": SHAREPOINT_LIST_NAME,
+        "SHAREPOINT_CLIENT_ID": SHAREPOINT_CLIENT_ID,
+        "SHAREPOINT_CLIENT_SECRET": SHAREPOINT_CLIENT_SECRET,
+        "AZURE_TENANT_ID": AZURE_TENANT_ID,
+        "AZURE_AI_PROJECT_ENDPOINT": AZURE_AI_PROJECT_ENDPOINT,
+        "AGENT_NAME": AGENT_NAME,
+    }
+
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise EnvironmentError(
+            "Missing required environment variables: "
+            + ", ".join(sorted(missing))
         )
 
-    try:
-        with config_path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in {config_path}: {exc}") from exc
-
-    if not isinstance(config, dict):
-        raise ValueError("Configuration root must be a JSON object.")
-
-    return config
-
-
-CONFIG = load_config(CONFIG_PATH)
-
-SHAREPOINT_CONFIG = CONFIG.get("sharepoint", {})
-AZURE_CONFIG = CONFIG.get("azure", {})
-
-SHAREPOINT_SITE_URL = SHAREPOINT_CONFIG.get("site_url", "")
-SHAREPOINT_LIST_NAME = SHAREPOINT_CONFIG.get("list_name", "Master Information Delivery Plan")
-SHAREPOINT_CLIENT_ID = SHAREPOINT_CONFIG.get("client_id")
-SHAREPOINT_CLIENT_SECRET = SHAREPOINT_CONFIG.get("client_secret")
-
-AZURE_AI_PROJECT_ENDPOINT = AZURE_CONFIG.get("ai_project_endpoint", "")
-
-AGENT_NAME = "inodidigtal-documentmanager"
-
 
 # ---------------------------------------------------------------------------
-# SharePoint helpers
+# Microsoft Graph helpers
 # ---------------------------------------------------------------------------
 
-def build_sharepoint_context() -> ClientContext:
-    """Build an authenticated SharePoint ClientContext.
+def get_graph_token() -> str:
+    """Acquire a Microsoft Graph access token using client credentials."""
+    credential = ClientSecretCredential(
+        tenant_id=AZURE_TENANT_ID,
+        client_id=SHAREPOINT_CLIENT_ID,
+        client_secret=SHAREPOINT_CLIENT_SECRET,
+    )
+    token = credential.get_token("https://graph.microsoft.com/.default")
+    return token.token
 
-    Supports app-only authentication via client credentials:
-    - sharepoint.client_id
-    - sharepoint.client_secret
-    """
-    if not SHAREPOINT_SITE_URL:
-        raise ValueError("Missing required config value: sharepoint.site_url")
 
-    if SHAREPOINT_CLIENT_ID and SHAREPOINT_CLIENT_SECRET:
-        credential = ClientCredential(SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET)
-        return ClientContext(SHAREPOINT_SITE_URL).with_credentials(credential)
+def graph_headers(token: str) -> dict:
+    """Return standard headers for Graph API requests."""
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
 
+
+def resolve_site_id(token: str) -> str:
+    """Resolve the SharePoint site URL to a Graph site ID."""
+    parsed = urlparse(SHAREPOINT_SITE_URL)
+    hostname = parsed.hostname  # e.g. inodigitaldemooutlook.sharepoint.com
+    site_path = parsed.path.rstrip("/")  # e.g. /sites/rogfaste03fcfbcc
+
+    url = f"{GRAPH_BASE}/sites/{hostname}:{site_path}"
+    resp = requests.get(url, headers=graph_headers(token), timeout=30)
+    resp.raise_for_status()
+    site = resp.json()
+    print(f"  Site name: {site.get('displayName', 'N/A')}")
+    return site["id"]
+
+
+def resolve_list_id(token: str, site_id: str) -> str:
+    """Resolve a list by display name to its Graph list ID."""
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists"
+    resp = requests.get(url, headers=graph_headers(token), timeout=30)
+    resp.raise_for_status()
+    for sp_list in resp.json().get("value", []):
+        if sp_list.get("displayName") == SHAREPOINT_LIST_NAME:
+            return sp_list["id"]
     raise ValueError(
-        "SharePoint app credentials are missing. "
-        "Set sharepoint.client_id and sharepoint.client_secret in config.json."
+        f"List '{SHAREPOINT_LIST_NAME}' not found on site. "
+        f"Available lists: {[l['displayName'] for l in resp.json().get('value', [])]}"
     )
 
 
-def get_items_created_today(ctx: ClientContext, list_name: str) -> list:
-    """Return all items in *list_name* whose Created date is today (UTC)."""
+def get_items_created_today(token: str, site_id: str, list_id: str) -> list:
+    """Return all items whose Created date is today (UTC) via Graph API."""
     today = date.today().isoformat()  # e.g. "2026-03-20"
 
-    odata_filter = (
-        f"Created ge datetime'{today}T00:00:00Z' "
-        f"and Created le datetime'{today}T23:59:59Z'"
-    )
+    # Graph doesn't support $filter on fields/Created for list items,
+    # so we fetch all items and filter client-side.
+    items = []
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items?$expand=fields"
 
-    sp_list = ctx.web.lists.get_by_title(list_name)
-    items = (
-        sp_list.items
-        .filter(odata_filter)
-        .get()
-        .execute_query()
-    )
-    return list(items)
+    while url:
+        resp = requests.get(url, headers=graph_headers(token), timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get("value", []):
+            created = item.get("createdDateTime", "")
+            if created.startswith(today):
+                items.append(item)
+        url = data.get("@odata.nextLink")
+
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +143,7 @@ def build_openai_client() -> OpenAI:
     the openai_client.beta.assistants / beta.threads API.
     """
     if not AZURE_AI_PROJECT_ENDPOINT:
-        raise ValueError("Missing required config value: azure.ai_project_endpoint")
+        raise EnvironmentError("AZURE_AI_PROJECT_ENDPOINT environment variable is required.")
 
     project_client = AIProjectClient(
         endpoint=AZURE_AI_PROJECT_ENDPOINT,
@@ -163,36 +191,58 @@ def send_title_to_agent(openai_client: OpenAI, assistant, title: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # ── 1. Connect to SharePoint ────────────────────────────────────────────
-    print("Connecting to SharePoint…")
+    # ── 0. Validate environment configuration ───────────────────────────────
     try:
-        ctx = build_sharepoint_context()
-        # Verify connectivity by loading the web title
-        ctx.web.get().execute_query()
-        print(f"Connected to: {ctx.web.url}\n")
+        validate_environment_configuration()
     except Exception as exc:
-        print(f"ERROR: Could not connect to SharePoint – {exc}", file=sys.stderr)
+        print(f"ERROR: Invalid environment configuration – {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # ── 2. Fetch items created today ────────────────────────────────────────
-    print(f"Fetching items from list '{SHAREPOINT_LIST_NAME}' created today ({date.today()})…\n")
+    # ── 1. Authenticate with Microsoft Graph ────────────────────────────────
+    print("Acquiring Microsoft Graph token…")
     try:
-        items = get_items_created_today(ctx, SHAREPOINT_LIST_NAME)
+        token = get_graph_token()
+        print("Token acquired.\n")
     except Exception as exc:
-        print(f"ERROR: Could not read SharePoint list – {exc}", file=sys.stderr)
+        print(f"ERROR: Could not acquire Graph token – {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # ── 2. Resolve SharePoint site and list ─────────────────────────────────
+    print(f"Resolving SharePoint site: {SHAREPOINT_SITE_URL}")
+    try:
+        site_id = resolve_site_id(token)
+        print(f"  Site ID: {site_id}\n")
+    except Exception as exc:
+        print(f"ERROR: Could not resolve SharePoint site – {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Resolving list: '{SHAREPOINT_LIST_NAME}'")
+    try:
+        list_id = resolve_list_id(token, site_id)
+        print(f"  List ID: {list_id}\n")
+    except Exception as exc:
+        print(f"ERROR: Could not resolve SharePoint list – {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # ── 3. Fetch items created today ────────────────────────────────────────
+    print(f"Fetching items created today ({date.today()})…\n")
+    try:
+        items = get_items_created_today(token, site_id, list_id)
+    except Exception as exc:
+        print(f"ERROR: Could not read SharePoint list items – {exc}", file=sys.stderr)
         sys.exit(1)
 
     if not items:
         print("No new items found today. Exiting.")
         return
 
-    # ── 3. Print all items to the terminal ─────────────────────────────────
+    # ── 4. Print all items to the terminal ─────────────────────────────────
     print(f"Found {len(items)} item(s) created today:\n")
     for item in items:
-        props = item.properties
+        fields = item.get("fields", {})
         print(
-            f"  ID: {props.get('ID', props.get('Id', '?')):>6}  "
-            f"Title: {props.get('Title', '(no title)')}"
+            f"  ID: {fields.get('id', '?'):>6}  "
+            f"Title: {fields.get('Title', '(no title)')}"
         )
     print()
 
@@ -223,7 +273,7 @@ def main() -> None:
 
     # ── 5. Send each title to the agent ────────────────────────────────────
     for item in items:
-        title = item.properties.get("Title", "").strip()
+        title = item.get("fields", {}).get("Title", "").strip()
         if not title:
             continue
 
