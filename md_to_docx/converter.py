@@ -158,6 +158,8 @@ def _ensure_section_dimensions(section) -> int:
     """Return usable section width, populating sensible defaults when absent."""
     if section.page_width is None:
         section.page_width = Inches(8.5)
+    if section.page_height is None:
+        section.page_height = Inches(11)
     if section.left_margin is None:
         section.left_margin = Inches(1)
     if section.right_margin is None:
@@ -254,9 +256,12 @@ def _apply_docx_branding(
     document = Document(docx_path)
     resolved_title = document_title or document.core_properties.title or docx_path.stem
 
-    for section in document.sections:
+    for index, section in enumerate(document.sections):
         section.different_first_page_header_footer = False
-        section.start_type = WD_SECTION_START.NEW_PAGE if section.start_type is None else section.start_type
+        if index == 0:
+            section.start_type = WD_SECTION_START.NEW_PAGE if section.start_type is None else section.start_type
+        else:
+            section.start_type = WD_SECTION_START.CONTINUOUS
         _add_header_band(section, resolved_title, "Controlled Document", colors)
         _add_footer_band(section, "Quality Management System", "Generated from Markdown", colors)
 

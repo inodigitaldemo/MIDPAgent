@@ -165,8 +165,12 @@ def ensure_assistant(token: str) -> str:
 
     Foundry 'prompt' agents aren't automatically exposed as OpenAI assistants.
     This creates one (idempotent by name) and returns its assistant ID.
+    If the assistant already exists, its instructions are updated to match
+    the latest Foundry agent definition so changes take effect immediately.
     """
     headers = foundry_headers(token)
+    agent_def = get_agent_definition(token)
+    latest_instructions = agent_def.get("instructions", "")
 
     # Check if an assistant already exists with this name
     resp = requests.get(
@@ -176,17 +180,29 @@ def ensure_assistant(token: str) -> str:
     resp.raise_for_status()
     for asst in resp.json().get("data", []):
         if asst.get("name") == AGENT_NAME:
+            # Update the existing assistant so instruction changes take effect
+            resp = requests.post(
+                f"{AZURE_AI_PROJECT_ENDPOINT}/assistants/{asst['id']}?api-version=v1",
+                headers=headers,
+                json={
+                    "model": agent_def["model"],
+                    "name": AGENT_NAME,
+                    "instructions": latest_instructions,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            print(f"  Updated assistant instructions (id={asst['id']})")
             return asst["id"]
 
     # Create from agent definition
-    agent_def = get_agent_definition(token)
     resp = requests.post(
         f"{AZURE_AI_PROJECT_ENDPOINT}/assistants?api-version=v1",
         headers=headers,
         json={
             "model": agent_def["model"],
             "name": AGENT_NAME,
-            "instructions": agent_def.get("instructions", ""),
+            "instructions": latest_instructions,
         },
         timeout=30,
     )
