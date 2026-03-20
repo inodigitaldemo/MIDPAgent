@@ -1,0 +1,11 @@
+{
+  "sharepoint": {
+    "site_url": "https://<tenant>.sharepoint.com/sites/<site>",
+    "list_name": "Master Information Delivery Plan",
+    "client_id": "<app-client-id>",
+    "client_secret": "<app-client-secret>"
+  },
+  "azure": {
+    "ai_project_endpoint": "https://<your-project>.services.ai.azure.com/api/projects/<project-name>"
+  }
+}

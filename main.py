@@ -6,33 +6,55 @@ to the terminal, and forwards each item's Title to the Azure AI Foundry agent
 named "inodidigtal-documentmanager".
 """
 
-import os
 import sys
+import json
 from datetime import date
+from pathlib import Path
 
-from dotenv import load_dotenv
 from office365.sharepoint.client_context import ClientContext
-from office365.runtime.auth.user_credential import UserCredential
 from office365.runtime.auth.client_credential import ClientCredential
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from openai import OpenAI
 
-load_dotenv()
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-SHAREPOINT_SITE_URL = os.environ.get("SHAREPOINT_SITE_URL", "")
-SHAREPOINT_LIST_NAME = os.environ.get("SHAREPOINT_LIST_NAME", "Master Information Delivery Plan")
+CONFIG_PATH = Path(__file__).with_name("config.json")
 
-SHAREPOINT_USERNAME = os.environ.get("SHAREPOINT_USERNAME")
-SHAREPOINT_PASSWORD = os.environ.get("SHAREPOINT_PASSWORD")
-SHAREPOINT_CLIENT_ID = os.environ.get("SHAREPOINT_CLIENT_ID")
-SHAREPOINT_CLIENT_SECRET = os.environ.get("SHAREPOINT_CLIENT_SECRET")
 
-AZURE_AI_PROJECT_ENDPOINT = os.environ.get("AZURE_AI_PROJECT_ENDPOINT", "")
+def load_config(config_path: Path) -> dict:
+    """Load and validate JSON configuration from *config_path*."""
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_path}. "
+            "Create it from config.example.json."
+        )
+
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {config_path}: {exc}") from exc
+
+    if not isinstance(config, dict):
+        raise ValueError("Configuration root must be a JSON object.")
+
+    return config
+
+
+CONFIG = load_config(CONFIG_PATH)
+
+SHAREPOINT_CONFIG = CONFIG.get("sharepoint", {})
+AZURE_CONFIG = CONFIG.get("azure", {})
+
+SHAREPOINT_SITE_URL = SHAREPOINT_CONFIG.get("site_url", "")
+SHAREPOINT_LIST_NAME = SHAREPOINT_CONFIG.get("list_name", "Master Information Delivery Plan")
+SHAREPOINT_CLIENT_ID = SHAREPOINT_CONFIG.get("client_id")
+SHAREPOINT_CLIENT_SECRET = SHAREPOINT_CONFIG.get("client_secret")
+
+AZURE_AI_PROJECT_ENDPOINT = AZURE_CONFIG.get("ai_project_endpoint", "")
 
 AGENT_NAME = "inodidigtal-documentmanager"
 
@@ -44,26 +66,20 @@ AGENT_NAME = "inodidigtal-documentmanager"
 def build_sharepoint_context() -> ClientContext:
     """Build an authenticated SharePoint ClientContext.
 
-    Supports two authentication methods depending on which environment
-    variables are set:
-    - App-only (client credentials): SHAREPOINT_CLIENT_ID + SHAREPOINT_CLIENT_SECRET
-    - Delegated (username/password): SHAREPOINT_USERNAME + SHAREPOINT_PASSWORD
+    Supports app-only authentication via client credentials:
+    - sharepoint.client_id
+    - sharepoint.client_secret
     """
     if not SHAREPOINT_SITE_URL:
-        raise EnvironmentError("SHAREPOINT_SITE_URL environment variable is required.")
+        raise ValueError("Missing required config value: sharepoint.site_url")
 
     if SHAREPOINT_CLIENT_ID and SHAREPOINT_CLIENT_SECRET:
         credential = ClientCredential(SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET)
         return ClientContext(SHAREPOINT_SITE_URL).with_credentials(credential)
 
-    if SHAREPOINT_USERNAME and SHAREPOINT_PASSWORD:
-        credential = UserCredential(SHAREPOINT_USERNAME, SHAREPOINT_PASSWORD)
-        return ClientContext(SHAREPOINT_SITE_URL).with_credentials(credential)
-
-    raise EnvironmentError(
-        "SharePoint credentials are missing. "
-        "Set either SHAREPOINT_CLIENT_ID + SHAREPOINT_CLIENT_SECRET "
-        "or SHAREPOINT_USERNAME + SHAREPOINT_PASSWORD."
+    raise ValueError(
+        "SharePoint app credentials are missing. "
+        "Set sharepoint.client_id and sharepoint.client_secret in config.json."
     )
 
 
@@ -99,7 +115,7 @@ def build_openai_client() -> OpenAI:
     the openai_client.beta.assistants / beta.threads API.
     """
     if not AZURE_AI_PROJECT_ENDPOINT:
-        raise EnvironmentError("AZURE_AI_PROJECT_ENDPOINT environment variable is required.")
+        raise ValueError("Missing required config value: azure.ai_project_endpoint")
 
     project_client = AIProjectClient(
         endpoint=AZURE_AI_PROJECT_ENDPOINT,
