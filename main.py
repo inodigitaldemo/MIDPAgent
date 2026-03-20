@@ -7,6 +7,7 @@ Foundry agent, parses the generated Markdown response, saves .md files
 locally, and uploads them to the SharePoint site's default document library.
 """
 
+import io
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential, AzureCliCredential
+from pypdf import PdfReader
 from md_to_docx import convert_md_to_docx
 
 load_dotenv()
@@ -37,6 +39,10 @@ AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID")
 AZURE_AI_PROJECT_ENDPOINT = os.environ.get("AZURE_AI_PROJECT_ENDPOINT")
 
 AGENT_NAME = os.environ.get("AGENT_NAME")
+
+SHAREPOINT_REFERENCE_LIST_NAME = os.environ.get(
+    "SHAREPOINT_REFERENCE_LIST_NAME", "ArbeidsromYM"
+)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -114,7 +120,7 @@ def resolve_list_id(token: str, site_id: str) -> str:
 
 def get_items_created_today(token: str, site_id: str, list_id: str) -> list:
     """Return all items whose Created date is today (UTC) via Graph API."""
-    today = date.today().isoformat()  # e.g. "2026-03-20"
+    today = date.today().isoformat()
 
     # Graph doesn't support $filter on fields/Created for list items,
     # so we fetch all items and filter client-side.
@@ -132,6 +138,92 @@ def get_items_created_today(token: str, site_id: str, list_id: str) -> list:
         url = data.get("@odata.nextLink")
 
     return items
+
+
+# ---------------------------------------------------------------------------
+# ArbeidsromYM reference PDF helpers
+# ---------------------------------------------------------------------------
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract text from raw PDF bytes using pypdf."""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    pages = []
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            pages.append(text)
+    return "\n\n".join(pages)
+
+
+def fetch_reference_pdfs(token: str, site_id: str) -> list[dict[str, str]]:
+    """Download PDFs from the ArbeidsromYM library and extract their text.
+
+    Returns a list of dicts: [{"name": "file.pdf", "text": "..."}].
+    """
+    headers = graph_headers(token)
+
+    # Resolve the document library by display name
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists"
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    library_id = None
+    for sp_list in resp.json().get("value", []):
+        if sp_list.get("displayName") == SHAREPOINT_REFERENCE_LIST_NAME:
+            library_id = sp_list["id"]
+            break
+
+    if not library_id:
+        print(
+            f"  WARNING: Reference library '{SHAREPOINT_REFERENCE_LIST_NAME}' "
+            "not found on the site."
+        )
+        return []
+
+    # List files in the library's root folder
+    url = (
+        f"{GRAPH_BASE}/sites/{site_id}/lists/{library_id}"
+        "/drive/root/children?$select=id,name,@microsoft.graph.downloadUrl"
+    )
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    pdfs: list[dict[str, str]] = []
+    for item in resp.json().get("value", []):
+        name = item.get("name", "")
+        if not name.lower().endswith(".pdf"):
+            continue
+
+        # Prefer the pre-authenticated download URL; fall back to Graph
+        download_url = item.get("@microsoft.graph.downloadUrl")
+        if download_url:
+            content_resp = requests.get(download_url, timeout=60)
+        else:
+            content_url = (
+                f"{GRAPH_BASE}/sites/{site_id}/lists/{library_id}"
+                f"/drive/items/{item['id']}/content"
+            )
+            content_resp = requests.get(
+                content_url, headers=headers, timeout=60
+            )
+        content_resp.raise_for_status()
+
+        text = _extract_pdf_text(content_resp.content)
+        if text.strip():
+            pdfs.append({"name": name, "text": text})
+            print(f"  Extracted text from: {name} ({len(text)} chars)")
+
+    return pdfs
+
+
+def build_reference_context(pdfs: list[dict[str, str]]) -> str:
+    """Combine extracted PDF texts into a single reference context string."""
+    if not pdfs:
+        return ""
+    sections = []
+    for pdf in pdfs:
+        sections.append(f"### {pdf['name']}\n\n{pdf['text']}")
+    return "\n\n---\n\n".join(sections)
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +302,33 @@ def ensure_assistant(token: str) -> str:
     return resp.json()["id"]
 
 
-def send_item_to_agent(token: str, assistant_id: str, fields: dict) -> str:
-    """Create a thread, post the item fields, run the assistant, poll until
+def send_item_to_agent(
+    token: str,
+    assistant_id: str,
+    fields: dict,
+    reference_context: str = "",
+) -> str:
+    """Create a thread, post the item fields (with optional reference
+    context from ArbeidsromYM PDFs), run the assistant, poll until
     complete, and return the assistant's text reply."""
     headers = foundry_headers(token)
     base = AZURE_AI_PROJECT_ENDPOINT
     payload = json.dumps(fields, indent=2, default=str)
+
+    # Build the user message: MIDP data + optional reference PDFs
+    if reference_context:
+        message_content = (
+            "## MIDP Item Data\n\n"
+            f"```json\n{payload}\n```\n\n"
+            "## Reference Document Templates (from ArbeidsromYM)\n\n"
+            "The following text was extracted from reference PDF documents. "
+            "Use these to determine which MIDP fields are relevant and how "
+            "to structure the output document. Only include fields that "
+            "align with what these reference documents expect.\n\n"
+            f"{reference_context}"
+        )
+    else:
+        message_content = payload
 
     # Create thread
     resp = requests.post(f"{base}/threads?api-version=v1",
@@ -227,7 +340,7 @@ def send_item_to_agent(token: str, assistant_id: str, fields: dict) -> str:
     requests.post(
         f"{base}/threads/{thread_id}/messages?api-version=v1",
         headers=headers,
-        json={"role": "user", "content": payload},
+        json={"role": "user", "content": message_content},
         timeout=30,
     ).raise_for_status()
 
@@ -324,6 +437,110 @@ def upload_to_sharepoint(token: str, site_id: str, filename: str,
 
 
 # ---------------------------------------------------------------------------
+# ArbeidsromYM document library helpers
+# ---------------------------------------------------------------------------
+
+def resolve_library_drive_id(token: str, site_id: str, library_name: str) -> str | None:
+    """Resolve a document library's drive ID by display name.
+
+    Returns the drive ID string, or None if the library is not found.
+    """
+    headers = graph_headers(token)
+
+    # First resolve the list ID for the library
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists"
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    library_id = None
+    for sp_list in resp.json().get("value", []):
+        if sp_list.get("displayName") == library_name:
+            library_id = sp_list["id"]
+            break
+
+    if not library_id:
+        return None
+
+    # Get the drive associated with this list
+    url = f"{GRAPH_BASE}/sites/{site_id}/lists/{library_id}/drive"
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.json()["id"]
+
+
+def find_existing_document(
+    token: str, site_id: str, drive_id: str, doc_id: str
+) -> str | None:
+    """Search the library for an existing document whose name starts with the
+    MIDP item's DocID.  Returns the webUrl if found, or None.
+    """
+    headers = graph_headers(token)
+
+    # List root children and look for a file starting with the DocID
+    url = (
+        f"{GRAPH_BASE}/sites/{site_id}/drives/{drive_id}"
+        f"/root/children?$select=id,name,webUrl"
+    )
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    for item in resp.json().get("value", []):
+        name = item.get("name", "")
+        if name.lower().startswith(doc_id.lower()):
+            return item.get("webUrl")
+
+    return None
+
+
+def upload_to_library(
+    token: str, site_id: str, drive_id: str, filename: str, content: bytes
+) -> str:
+    """Upload a file to a specific document library drive.
+
+    Returns the webUrl of the uploaded file.
+    """
+    safe_name = re.sub(r'[<>:"|?*]', "_", filename)
+    url = (
+        f"{GRAPH_BASE}/sites/{site_id}/drives/{drive_id}"
+        f"/root:/{safe_name}:/content"
+    )
+    resp = requests.put(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/octet-stream",
+        },
+        data=content,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    web_url = resp.json().get("webUrl", "")
+    print(f"  Uploaded to library: {web_url}")
+    return web_url
+
+
+def update_midp_item_link(
+    token: str, site_id: str, list_id: str, item_id: str, doc_url: str
+) -> None:
+    """Update the Arbeidsdokument column on the MIDP list item with a link."""
+    url = (
+        f"{GRAPH_BASE}/sites/{site_id}/lists/{list_id}"
+        f"/items/{item_id}/fields"
+    )
+    resp = requests.patch(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={"Arbeidsdokument": doc_url},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    print(f"  Updated MIDP Arbeidsdokument link: {doc_url}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -360,7 +577,18 @@ def main() -> None:
     except Exception as exc:
         print(f"ERROR: Could not resolve SharePoint list – {exc}", file=sys.stderr)
         sys.exit(1)
-
+    # ── 2b. Resolve ArbeidsromYM document library drive ──────────────────
+    print(f"Resolving document library: '{SHAREPOINT_REFERENCE_LIST_NAME}'")
+    ref_drive_id = resolve_library_drive_id(
+        token, site_id, SHAREPOINT_REFERENCE_LIST_NAME
+    )
+    if ref_drive_id:
+        print(f"  Drive ID: {ref_drive_id}\n")
+    else:
+        print(
+            f"  WARNING: Library '{SHAREPOINT_REFERENCE_LIST_NAME}' not found. "
+            "Documents will be uploaded to the site root instead.\n"
+        )
     # ── 3. Fetch items created today ────────────────────────────────────────
     print(f"Fetching items created today ({date.today()})…\n")
     try:
@@ -373,7 +601,7 @@ def main() -> None:
         print("No new items found today. Exiting.")
         return
 
-    # ── 4. Print all items to the terminal ─────────────────────────────────
+    # ── 3b. Print all items to the terminal ────────────────────────────────
     print(f"Found {len(items)} item(s) created today:\n")
     for item in items:
         fields = item.get("fields", {})
@@ -383,7 +611,20 @@ def main() -> None:
         )
     print()
 
-    # ── 4. Connect to Azure AI Foundry agent ─────────────────────────────
+    # ── 4. Fetch reference PDFs from ArbeidsromYM ──────────────────────────
+    print(f"Fetching reference PDFs from '{SHAREPOINT_REFERENCE_LIST_NAME}'…")
+    try:
+        reference_pdfs = fetch_reference_pdfs(token, site_id)
+        reference_context = build_reference_context(reference_pdfs)
+        if reference_pdfs:
+            print(f"  Loaded {len(reference_pdfs)} reference PDF(s).\n")
+        else:
+            print("  No reference PDFs found. Agent will use MIDP data only.\n")
+    except Exception as exc:
+        print(f"  WARNING: Could not fetch reference PDFs – {exc}")
+        reference_context = ""
+
+    # ── 5. Connect to Azure AI Foundry agent ─────────────────────────────
     print("Acquiring Azure AI Foundry token…")
     try:
         foundry_token = get_foundry_token()
@@ -400,7 +641,7 @@ def main() -> None:
 
     print(f"Assistant ready (id={assistant_id}). Sending items…\n")
 
-    # ── 5. Send each item to the agent and handle Markdown output ─────────
+    # ── 6. Send each item to the agent and handle Markdown output ─────────
     for item in items:
         fields = item.get("fields", {})
         title = fields.get("Title", "").strip()
@@ -409,7 +650,9 @@ def main() -> None:
 
         print(f"→ Sending item: '{title}'")
         try:
-            response = send_item_to_agent(foundry_token, assistant_id, fields)
+            response = send_item_to_agent(
+                foundry_token, assistant_id, fields, reference_context
+            )
         except Exception as exc:
             print(f"  ERROR processing '{title}': {exc}\n", file=sys.stderr)
             continue
@@ -436,12 +679,39 @@ def main() -> None:
             print(f"  WARNING: DOCX conversion failed – {exc}")
             continue
 
-        # Upload .docx to SharePoint
-        try:
-            upload_to_sharepoint(token, site_id, docx_path.name,
-                                 docx_path.read_bytes())
-        except Exception as exc:
-            print(f"  WARNING: SharePoint upload failed – {exc}")
+        # Upload .docx to the discipline's document library
+        doc_id = fields.get("DocID", fields.get("Title", "")).strip()
+        item_id = fields.get("id") or item.get("id")
+
+        if ref_drive_id:
+            # Check if a document already exists in ArbeidsromYM for this item
+            existing_url = find_existing_document(
+                token, site_id, ref_drive_id, doc_id
+            )
+            if existing_url:
+                print(f"  Document already exists in library: {existing_url}")
+                print(f"  Skipping upload.")
+            else:
+                try:
+                    web_url = upload_to_library(
+                        token, site_id, ref_drive_id,
+                        docx_path.name, docx_path.read_bytes(),
+                    )
+                    # Update the MIDP item's Arbeidsdokument column
+                    if item_id and web_url:
+                        update_midp_item_link(
+                            token, site_id, list_id, item_id, web_url
+                        )
+                except Exception as exc:
+                    print(f"  WARNING: Library upload failed – {exc}")
+        else:
+            # Fallback: upload to site root if library not found
+            try:
+                upload_to_sharepoint(
+                    token, site_id, docx_path.name, docx_path.read_bytes()
+                )
+            except Exception as exc:
+                print(f"  WARNING: SharePoint upload failed – {exc}")
 
         print()
 
