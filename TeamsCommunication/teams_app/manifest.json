@@ -1,0 +1,43 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "7950a3dd-fb9b-4bb3-b166-2a7ef5579b67",
+  "developer": {
+    "name": "MIDPAgent",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/terms"
+  },
+  "name": {
+    "short": "MIDPAgent",
+    "full": "MIDP Agent Bot"
+  },
+  "description": {
+    "short": "MIDP Agent Teams Bot",
+    "full": "An AI Agent that posts Adaptive Cards to Teams channels."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#FFFFFF",
+  "bots": [
+    {
+      "botId": "7950a3dd-fb9b-4bb3-b166-2a7ef5579b67",
+      "scopes": [
+        "team",
+        "personal",
+        "groupChat"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": []
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": []
+}

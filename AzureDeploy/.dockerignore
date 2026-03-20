@@ -1,0 +1,26 @@
+# ── Python / venv ────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Project artefacts not needed at runtime ──────────────────────────────────
+output/
+MDFiles/
+DocTemplates/
+md_to_docx/
+AzureDeploy/
+*.zip
+
+# ── IDE / OS ─────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.vscode/
+*.md
+*.example.json
+config.json
+
+# ── Docker build context should ONLY contain ─────────────────────────────────
+# TeamsCommunication/
+# requirements.txt
+# env

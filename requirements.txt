@@ -4,3 +4,9 @@ pypandoc_binary==1.15
 python-docx>=1.1.0
 python-dotenv==1.2.2
 requests>=2.31.0
+
+# Bot Framework SDK (TeamsCommunication module)
+botbuilder-core>=4.16.1
+botbuilder-integration-aiohttp>=4.16.1
+botbuilder-schema>=4.16.1
+aiohttp>=3.9.0

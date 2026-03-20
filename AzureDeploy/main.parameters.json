@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "botAppId": {
+      "value": "7950a3dd-fb9b-4bb3-b166-2a7ef5579b67"
+    },
+    "botAppPassword": {
+      "value": ""
+    },
+    "tenantId": {
+      "value": "1d59009e-fe98-49af-97e4-562c0fedcf05"
+    },
+    "aiProjectEndpoint": {
+      "value": "https://inodigitaldemo-document-resource.services.ai.azure.com/api/projects/inodigitaldemo-documentmanager"
+    },
+    "agentName": {
+      "value": "Agent943"
+    },
+    "teamsChannelId": {
+      "value": "19:4OOXK-dTXrm8W9E4ILyWSuPIDgXoW2rB0PDAVOGmDAo1@thread.tacv2"
+    },
+    "botResourceName": {
+      "value": "MIDPAgent"
+    }
+  }
+}

@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential, AzureCliCredential
 from md_to_docx import convert_md_to_docx
 
-load_dotenv()
+load_dotenv("env")
 
 # ---------------------------------------------------------------------------
 # Configuration
