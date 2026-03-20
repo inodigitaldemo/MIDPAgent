@@ -1,0 +1,4 @@
+azure-ai-projects==2.0.1
+azure-identity==1.25.3
+office365-rest-python-client==2.6.2
+python-dotenv==1.2.2
