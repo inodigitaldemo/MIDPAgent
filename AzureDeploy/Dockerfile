@@ -13,6 +13,8 @@ COPY --from=build /build/deps /usr/local/lib/python3.12/site-packages
 
 # Application code
 COPY TeamsCommunication/ ./TeamsCommunication/
+COPY md_to_docx/ ./md_to_docx/
+COPY DocTemplates/ ./DocTemplates/
 COPY requirements.txt .
 COPY env .
 

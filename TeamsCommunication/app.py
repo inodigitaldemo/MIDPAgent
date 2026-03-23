@@ -27,6 +27,7 @@ from botbuilder.schema import Activity
 from .agent_service import FoundryAgentService
 from .bot import MIDPBot
 from .config import load_config, validate_bot_identity
+from .midp_service import MIDPService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,6 +65,22 @@ else:
     )
 
 BOT = MIDPBot(agent_service=AGENT_SERVICE)
+
+# Initialise the MIDP service (SharePoint polling + document production)
+MIDP_SERVICE = None
+if CONFIG.sharepoint_site_url and CONFIG.channel_id:
+    MIDP_SERVICE = MIDPService(config=CONFIG, agent_service=AGENT_SERVICE)
+    BOT._midp_service = MIDP_SERVICE
+    logger.info(
+        "MIDP service initialised (list=%s, channel=%s)",
+        CONFIG.sharepoint_list_name,
+        CONFIG.channel_id,
+    )
+else:
+    logger.warning(
+        "SHAREPOINT_SITE_URL or TEAMS_CHANNEL_ID not set – "
+        "MIDP polling disabled."
+    )
 
 
 # Error handler -----------------------------------------------------------
@@ -108,6 +125,18 @@ def create_app() -> web.Application:
     app = web.Application(middlewares=[aiohttp_error_middleware])
     app.router.add_get("/", health)
     app.router.add_post("/api/messages", messages)
+
+    # Start/stop MIDP polling as background task
+    if MIDP_SERVICE:
+        async def start_midp_polling(app: web.Application) -> None:
+            await MIDP_SERVICE.start_polling()
+
+        async def stop_midp_polling(app: web.Application) -> None:
+            await MIDP_SERVICE.stop_polling()
+
+        app.on_startup.append(start_midp_polling)
+        app.on_cleanup.append(stop_midp_polling)
+
     return app
 
 

@@ -7,8 +7,6 @@ __pycache__/
 # ── Project artefacts not needed at runtime ──────────────────────────────────
 output/
 MDFiles/
-DocTemplates/
-md_to_docx/
 AzureDeploy/
 *.zip
 

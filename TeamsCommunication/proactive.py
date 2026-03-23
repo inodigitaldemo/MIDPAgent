@@ -160,5 +160,3 @@ async def send_to_channel(
                 resp.raise_for_status()
             result = json.loads(body_text)
             return result.get("activityId", result.get("id", ""))
-
-    return result_id

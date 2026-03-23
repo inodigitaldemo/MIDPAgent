@@ -1,27 +1,29 @@
 """TeamsCommunication – Bot Framework SDK module for Teams messaging."""
 
 from .adaptive_cards import (
-    agent_response_attachment,
-    agent_response_card,
+    document_approval_attachment,
+    document_approval_card,
     error_card,
-    hello_world_attachment,
-    hello_world_card,
+    produce_document_attachment,
+    produce_document_card,
 )
 from .agent_service import FoundryAgentService
 from .bot import MIDPBot
 from .config import BotConfig, load_config, validate_bot_identity
+from .midp_service import MIDPService
 from .proactive import send_to_channel
 
 __all__ = [
     "BotConfig",
     "FoundryAgentService",
     "MIDPBot",
-    "agent_response_attachment",
-    "agent_response_card",
+    "MIDPService",
+    "document_approval_attachment",
+    "document_approval_card",
     "error_card",
-    "hello_world_attachment",
-    "hello_world_card",
     "load_config",
+    "produce_document_attachment",
+    "produce_document_card",
     "send_to_channel",
     "validate_bot_identity",
 ]

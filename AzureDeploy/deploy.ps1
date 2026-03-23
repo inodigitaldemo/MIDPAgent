@@ -50,6 +50,8 @@ $ParamsFile = Join-Path $ScriptDir 'main.parameters.json'
 # Directories / files that make up the deployable application
 $AppSources = @(
     (Join-Path $RepoRoot 'TeamsCommunication'),
+    (Join-Path $RepoRoot 'md_to_docx'),
+    (Join-Path $RepoRoot 'DocTemplates'),
     (Join-Path $RepoRoot 'requirements.txt'),
     (Join-Path $RepoRoot 'env')
 )

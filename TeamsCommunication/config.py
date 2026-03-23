@@ -46,6 +46,8 @@ class BotConfig:
     sharepoint_site_url: Optional[str] = None
     sharepoint_client_id: Optional[str] = None
     sharepoint_client_secret: Optional[str] = None
+    sharepoint_list_name: str = "MIDP"
+    sharepoint_reference_library: str = "ArbeidsromYM"
 
     # Azure AI Foundry agent
     ai_project_endpoint: Optional[str] = None
@@ -72,6 +74,10 @@ def load_config() -> BotConfig:
         sharepoint_site_url=os.getenv("SHAREPOINT_SITE_URL"),
         sharepoint_client_id=os.getenv("SHAREPOINT_CLIENT_ID"),
         sharepoint_client_secret=os.getenv("SHAREPOINT_CLIENT_SECRET"),
+        sharepoint_list_name=os.getenv("SHAREPOINT_LIST_NAME", "MIDP"),
+        sharepoint_reference_library=os.getenv(
+            "SHAREPOINT_REFERENCE_LIST_NAME", "ArbeidsromYM"
+        ),
         ai_project_endpoint=os.getenv("AZURE_AI_PROJECT_ENDPOINT"),
         agent_name=os.getenv("AGENT_NAME"),
         port=int(os.getenv("BOT_PORT", "3978")),
