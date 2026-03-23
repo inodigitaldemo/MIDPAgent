@@ -160,16 +160,22 @@ class FoundryAgentService:
                 resp.raise_for_status()
                 run_id = (await resp.json())["id"]
 
-            # 4. Poll until terminal state
+            # 4. Poll until terminal state (timeout after 90 seconds)
             status = "queued"
-            while status not in ("completed", "failed", "cancelled", "expired"):
-                await asyncio.sleep(1.5)
+            max_polls = 90  # ~90 seconds at 1s intervals
+            for _ in range(max_polls):
+                await asyncio.sleep(1.0)
                 async with session.get(
                     f"{base}/threads/{thread_id}/runs/{run_id}?api-version={v}",
                     headers=headers,
                 ) as resp:
                     resp.raise_for_status()
                     status = (await resp.json())["status"]
+                if status in ("completed", "failed", "cancelled", "expired"):
+                    break
+            else:
+                logger.warning("Run %s timed out after %ds", run_id, max_polls)
+                return "[Agent timed out – please try again]"
 
             if status != "completed":
                 logger.warning("Run %s ended with status '%s'", run_id, status)

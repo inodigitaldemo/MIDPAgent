@@ -69,9 +69,13 @@ BOT = MIDPBot(agent_service=AGENT_SERVICE)
 # Error handler -----------------------------------------------------------
 async def on_error(context: TurnContext, error: Exception) -> None:
     """Global error handler for the adapter."""
-    print(f"\n[on_turn_error] unhandled error: {error}", file=sys.stderr)
+    logger.error("[on_turn_error] unhandled error: %s", error)
     traceback.print_exc(file=sys.stderr)
-    await context.send_activity("Sorry, the bot encountered an error.")
+    try:
+        await context.send_activity("Sorry, the bot encountered an error.")
+    except Exception as send_err:
+        # Connection may already be dead – log but don't crash the server.
+        logger.error("Could not send error message to user: %s", send_err)
 
 
 ADAPTER.on_turn_error = on_error
